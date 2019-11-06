@@ -5,7 +5,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
-
+using System.Linq;
+using System.Security.Cryptography;
 using Microsoft.Build.Collections;
 using Microsoft.Build.Evaluation;
 using Microsoft.Build.Execution;
@@ -764,6 +765,7 @@ namespace Microsoft.Build.BackEnd
             // if any input is newer than any output, do a full build
             DependencyAnalysisLogDetail dependencyAnalysisDetailEntry;
             bool someOutOfDate = IsAnyOutOfDate(out dependencyAnalysisDetailEntry, _project.Directory, inputs, outputs);
+            var hash = GetHashOfAllInputs(_project.Directory, inputs);
 
             if (someOutOfDate)
             {
@@ -945,6 +947,50 @@ namespace Microsoft.Build.BackEnd
                 if (!h1.ContainsKey(h2Key))
                 {
                     uniqueKeysInH2.Add(h2Key);
+                }
+            }
+        }
+
+        internal static string GetHashOfAllInputs<T>(string projectDirectory, IList<T> inputs)
+        {
+            ErrorUtilities.VerifyThrow(inputs.Count > 0, "Need to specify inputs");
+            if (inputs.Count > 0)
+            {
+                ErrorUtilities.VerifyThrow(inputs[0] is string || inputs[0] is ProjectItemInstance, "Must be either string or ProjectItemInstance");
+            }
+
+            var hashes = inputs.Select(input =>
+            {
+                string unescapedInput = EscapingUtilities.UnescapeAll(FileUtilities.FixFilePath(input.ToString()));
+                ErrorUtilities.ThrowIfTypeDoesNotImplementToString(input);
+                byte[] bytes;
+                try
+                {
+                    string unescapedInputFullPath = Path.Combine(projectDirectory, unescapedInput);
+                    using (var stream = File.OpenRead(unescapedInputFullPath))
+                    using (var algorithm = SHA256.Create())
+                    {
+                        bytes = algorithm.ComputeHash(stream);
+                    }
+                }
+                catch (Exception e) when (ExceptionHandling.IsIoRelatedException(e))
+                {
+                    // Output does not exist
+                    bytes = new byte[0];
+                }
+                return bytes;
+            });
+
+            if (hashes.Count() == 1)
+            {
+                return string.Concat(hashes.First().Select(b => b.ToString("X2")));
+            }
+            else
+            {
+                using (var algorithm = SHA256.Create())
+                {
+                    var combinedHash = algorithm.ComputeHash(hashes.SelectMany(hash => hash).ToArray());
+                    return string.Concat(combinedHash.Select(b => b.ToString("X2")));
                 }
             }
         }
